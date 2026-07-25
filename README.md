@@ -1,1 +1,1 @@
-# NewsletterAi
+# JobPulse
