@@ -13,7 +13,7 @@
     # return response.text
 import requests
 
-URL = "https://remoteok.com/remote-dev-jobs"
+URL = "https://www.python.org/jobs/"
 
 def fetch_html():
     headers = {
