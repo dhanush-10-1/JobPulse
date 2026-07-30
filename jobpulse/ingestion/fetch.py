@@ -13,9 +13,8 @@
     # return response.text
 import requests
 
-URL = "https://www.python.org/jobs/"
 
-def fetch_html():
+def fetch_html(url):
     headers = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -23,7 +22,7 @@ def fetch_html():
         "Chrome/137.0.0.0 Safari/537.36"
     )
 }
-    response = requests.get(URL,headers=headers)
+    response = requests.get(url,headers=headers)
 
     print("Status:", response.status_code)
     print("Content-Type:", response.headers.get("Content-Type"))
