@@ -1,18 +1,5 @@
-# import requests
-
-# URL = "https://weworkremotely.com/categories/remote-programming-jobs"
-
-
-
-
-# def fetch_html():
-    # response=requests.get(URL)
-    # print(response.url)
-    # response.raise_for_status()
-    
-    # return response.text
 import requests
-
+from jobpulse.utils.logger import logger
 
 def fetch_html(url):
     headers = {
@@ -22,13 +9,13 @@ def fetch_html(url):
         "Chrome/137.0.0.0 Safari/537.36"
     )
 }
-    response = requests.get(url,headers=headers)
-
-    print("Status:", response.status_code)
-    print("Content-Type:", response.headers.get("Content-Type"))
-    print("URL:", response.url)
-
-    response.raise_for_status()
+    try:
+        response = requests.get(url,headers=headers)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        logger.error("failed to fetch html %s: %s",url,e)
+        raise 
+    
     return response.text
     
 
