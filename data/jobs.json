@@ -1,5 +1,19 @@
 [
   {
+    "title": "Lead Python Backend Engineer",
+    "company": "Reef Technologies",
+    "location": "Warsaw (fully remote), Poland",
+    "posted_date": "Posted: 04 August 2026",
+    "url": "/jobs/8122/"
+  },
+  {
+    "title": "Senior Python Backend Engineer",
+    "company": "Reef Technologies",
+    "location": "Warsaw (fully remote), Poland",
+    "posted_date": "Posted: 04 August 2026",
+    "url": "/jobs/8121/"
+  },
+  {
     "title": "Python Backend Engineer",
     "company": "Constelli Signals",
     "location": "Hyderabad, Telangana, India",
@@ -159,19 +173,5 @@
     "location": "Bangalore, Pune, India",
     "posted_date": "Posted: 08 June 2026",
     "url": "/jobs/8090/"
-  },
-  {
-    "title": "Founding ML/Data Scientist (Remote, UK)",
-    "company": "MyDataValue",
-    "location": "Remote - London UK, United Kingdom",
-    "posted_date": "Posted: 03 June 2026",
-    "url": "/jobs/8089/"
-  },
-  {
-    "title": "Tech Lead (Python) | Remote \u2013 LATAM | Full-time",
-    "company": "Crehana",
-    "location": "LATAM, LATAM, LATAM",
-    "posted_date": "Posted: 02 June 2026",
-    "url": "/jobs/8088/"
   }
 ]

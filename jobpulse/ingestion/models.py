@@ -13,3 +13,6 @@ class Job():
             "posted_date":self.posted_date,
             "url":self.url
         }
+    @classmethod
+    def from_row(cls,row):
+        return cls(*row)

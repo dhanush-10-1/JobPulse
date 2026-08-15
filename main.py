@@ -4,7 +4,7 @@ from jobpulse.ingestion.models import Job
 from jobpulse.storage.exporter import export_jobs
 from jobpulse.utils.logger import logger
 from config import URL,OUTPUT_FILE
-from jobpulse.database.repository import insert_jobs
+from jobpulse.database.repository import insert_jobs,get_all_jobs
 
 
 
@@ -18,6 +18,7 @@ def main():
         job_listings=extract_jobs(soup)
         insert_jobs(job_listings)
         export_jobs(job_listings,OUTPUT_FILE) 
+        get_all_jobs()
     except Exception as e:
         logger.exception("jobpulse pipeline has failed")
         raise

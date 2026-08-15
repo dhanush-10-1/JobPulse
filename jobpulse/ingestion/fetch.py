@@ -13,7 +13,7 @@ def fetch_html(url):
         response = requests.get(url,headers=headers)
         response.raise_for_status()
     except requests.RequestException as e:
-        logger.error("failed to fetch html %s: %s",url,e)
+        logger.exception("failed to fetch html %s",url)
         raise 
     
     return response.text
