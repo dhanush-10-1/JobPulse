@@ -11,3 +11,4 @@ frontend/dist/
 .vscode/
 logs/
 config/
+data/jobs.json
