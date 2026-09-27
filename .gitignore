@@ -3,3 +3,11 @@ __pycache__/
 .venv/
 venv/
 .env
+# Frontend dependencies
+frontend/node_modules/
+
+# Frontend build output
+frontend/dist/
+.vscode/
+logs/
+config/

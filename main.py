@@ -1,10 +1,6 @@
-from jobpulse.ingestion.fetch import fetch_html
-from jobpulse.ingestion.parser import parse_html,extract_jobs
-from jobpulse.ingestion.models import Job
-from jobpulse.storage.exporter import export_jobs
+from jobpulse.ingestion.pipeline import run_ingestion
 from jobpulse.utils.logger import logger
-from config import URL,OUTPUT_FILE
-from jobpulse.database.repository import insert_jobs,get_all_jobs
+from jobpulse.database.repository import get_all_jobs,get_jobs_by_url,get_jobs_by_company,get_jobs_by_location,get_recent_jobs
 
 
 
@@ -13,12 +9,19 @@ from jobpulse.database.repository import insert_jobs,get_all_jobs
 def main():
     print("main started")
     try:
-        html = fetch_html(URL)
-        soup=parse_html(html)
-        job_listings=extract_jobs(soup)
-        insert_jobs(job_listings)
-        export_jobs(job_listings,OUTPUT_FILE) 
-        get_all_jobs()
+        stats = run_ingestion()
+        logger.info("command-line ingestion stats: %s", stats)
+        job_listings = get_all_jobs()
+        if job_listings:
+            get_jobs_by_url(job_listings[0].url)
+        if len(job_listings) > 1:
+            get_jobs_by_company(job_listings[1].company)
+        if len(job_listings) > 2:
+            get_jobs_by_location(job_listings[2].location)
+        get_recent_jobs(30)
+        
+        
+
     except Exception as e:
         logger.exception("jobpulse pipeline has failed")
         raise

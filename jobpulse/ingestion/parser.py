@@ -1,4 +1,7 @@
+from datetime import datetime
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
+from config import URL
 from jobpulse.ingestion.models import Job
 def parse_html(html):
     soup=BeautifulSoup(html,"lxml")
@@ -17,7 +20,10 @@ def extract_jobs(soup):
         br=company.find("br")
         company_name=br.next_sibling.strip()
         location=card.find("span",class_="listing-location")
-        posted_date=card.find("span",class_="listing-posted")
-        jobs.append(Job(title_name.get_text(),company_name,location.get_text(),posted_date.get_text(),title_name['href']))
+        posted_date=card.find("span",class_="listing-posted").get_text(strip=True)
+        posted_date=posted_date.replace("Posted:","")
+        posted_date=datetime.strptime(posted_date,"%d %B %Y" ).date()
+        job_url = urljoin(URL, title_name['href'])
+        jobs.append(Job(title_name.get_text(),company_name,location.get_text(),posted_date,job_url))
 
     return jobs
