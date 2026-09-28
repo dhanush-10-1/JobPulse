@@ -36,7 +36,12 @@ def process_job(data):
         data["company"],
         data["location"],
         date.fromisoformat(data["posted_date"]),
-        data["url"]
+        data["url"],
+        source=data.get("source", "python.org"),
+        source_job_id=data.get("source_job_id"),
+        description=data.get("description"),
+        employment_type=data.get("employment_type"),
+        salary=data.get("salary"),
     )
     insert_jobs([job])
 

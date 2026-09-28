@@ -1,5 +1,7 @@
 from fastapi import FastAPI,HTTPException,status
+from jobpulse.ai.search import semantic_search
 from jobpulse.database.repository import ensure_job_freshness_schema,get_job_by_id,get_jobs_by_filter
+from jobpulse.utils.logger import logger
 
 app = FastAPI()
 
@@ -19,6 +21,45 @@ def get_jobs(company: str | None = None,location:str |None=None):
             detail="No jobs found"
         )
     return [job.to_dict() for job in jobs]
+
+@app.get("/jobs/semantic-search")
+def search_jobs(q: str, top_k: int = 10):
+    if not q.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query parameter 'q' must not be blank",
+        )
+    if top_k < 1 or top_k > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="top_k must be between 1 and 50",
+        )
+
+    try:
+        matches = semantic_search(q, top_k=top_k)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+    except Exception as error:
+        logger.exception("semantic job search failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Semantic search is temporarily unavailable",
+        ) from error
+
+    return {
+        "query": q,
+        "results": [
+            {
+                "job": result["job"].to_dict(),
+                "distance": result["distance"],
+                "similarity": result["similarity"],
+            }
+            for result in matches
+        ],
+    }
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id:int):

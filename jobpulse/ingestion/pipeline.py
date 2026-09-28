@@ -31,7 +31,7 @@ def run_ingestion():
     if not html.strip():
         raise ValueError("source returned an empty response")
 
-    jobs = extract_jobs(parse_html(html))
+    jobs = extract_jobs(parse_html(html), detail_fetcher=fetch_html)
     _validate_jobs(jobs)
     stats = insert_jobs(jobs, source="python.org", complete_run=True)
     export_jobs(jobs, OUTPUT_FILE)

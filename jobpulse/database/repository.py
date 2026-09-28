@@ -1,12 +1,92 @@
 from .connections import connect_db, psycopg2
+from psycopg2.extras import Json
 from jobpulse.utils.logger import logger
 from jobpulse.ingestion.models import Job
+import config
 
 
 JOB_COLUMNS = """
     title, company, location, posted_date, url,
-    source, first_seen_at, last_seen_at, is_active
+    source, first_seen_at, last_seen_at, is_active,
+    source_job_id, description, employment_type, salary
 """
+
+
+def _create_ai_schema(cursor):
+    cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_ai_enrichment (
+            job_id BIGINT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            skills JSONB NOT NULL DEFAULT '[]'::jsonb,
+            category VARCHAR(255),
+            seniority VARCHAR(100),
+            experience_years INTEGER,
+            employment_type VARCHAR(100),
+            responsibilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+            requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+            summary TEXT,
+            model VARCHAR(255),
+            status VARCHAR(50) NOT NULL DEFAULT 'pending',
+            enriched_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        "ALTER TABLE job_ai_enrichment ADD COLUMN IF NOT EXISTS experience_years INTEGER"
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_embeddings (
+            job_id BIGINT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+            embedding vector NOT NULL,
+            embedding_model VARCHAR(255) NOT NULL,
+            dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS job_ai_enrichment_status_idx
+        ON job_ai_enrichment (status)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS job_ai_enrichment_model_idx
+        ON job_ai_enrichment (model)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS job_embeddings_model_idx
+        ON job_embeddings (embedding_model)
+        """
+    )
+
+
+def ensure_ai_schema():
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        _create_ai_schema(cursor)
+        conn.commit()
+    except psycopg2.Error:
+        if conn:
+            conn.rollback()
+        logger.exception("failed to initialize AI schema")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 def ensure_job_freshness_schema():
@@ -28,6 +108,10 @@ def ensure_job_freshness_schema():
             "first_seen_at": "TIMESTAMP",
             "last_seen_at": "TIMESTAMP",
             "is_active": "BOOLEAN",
+            "source_job_id": "VARCHAR(255)",
+            "description": "TEXT",
+            "employment_type": "VARCHAR(100)",
+            "salary": "VARCHAR(255)",
         }
         added = set()
         for column, definition in additions.items():
@@ -59,6 +143,7 @@ def ensure_job_freshness_schema():
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS jobs_active_source_idx ON jobs (source, is_active)"
         )
+        _create_ai_schema(cursor)
         conn.commit()
     except psycopg2.Error:
         if conn:
@@ -91,7 +176,7 @@ def insert_jobs(jobs, source="python.org", complete_run=False, stale_after_days=
                 f"""
                 INSERT INTO jobs ({JOB_COLUMNS})
                 VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP,
-                        CURRENT_TIMESTAMP, TRUE)
+                    CURRENT_TIMESTAMP, TRUE, %s, %s, %s, %s)
                 ON CONFLICT (url)
                 DO UPDATE SET
                     title = EXCLUDED.title,
@@ -99,6 +184,10 @@ def insert_jobs(jobs, source="python.org", complete_run=False, stale_after_days=
                     location = EXCLUDED.location,
                     posted_date = EXCLUDED.posted_date,
                     source = EXCLUDED.source,
+                    source_job_id = EXCLUDED.source_job_id,
+                    description = EXCLUDED.description,
+                    employment_type = EXCLUDED.employment_type,
+                    salary = EXCLUDED.salary,
                     last_seen_at = CURRENT_TIMESTAMP,
                     is_active = TRUE
                 """,
@@ -109,6 +198,10 @@ def insert_jobs(jobs, source="python.org", complete_run=False, stale_after_days=
                     job.posted_date,
                     job.url,
                     source,
+                    job.source_job_id,
+                    job.description,
+                    job.employment_type,
+                    job.salary,
                 ),
             )
 
@@ -142,6 +235,265 @@ def insert_jobs(jobs, source="python.org", complete_run=False, stale_after_days=
         if conn:
             conn.rollback()
         logger.exception("failed to upsert jobs")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def _enrichment_values(enrichment):
+    if hasattr(enrichment, "to_dict"):
+        enrichment = enrichment.to_dict()
+    return {
+        "skills": enrichment.get("skills", []),
+        "category": enrichment.get("category"),
+        "seniority": enrichment.get("seniority"),
+        "experience_years": enrichment.get("experience_years"),
+        "employment_type": enrichment.get("employment_type"),
+        "responsibilities": enrichment.get("responsibilities", []),
+        "requirements": enrichment.get("requirements", []),
+        "summary": enrichment.get("summary"),
+    }
+
+
+def save_job_ai_enrichment(
+    job_id,
+    enrichment,
+    model=None,
+    status="completed",
+    enriched_at=None,
+):
+    values = _enrichment_values(enrichment)
+    ensure_ai_schema()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO job_ai_enrichment (
+                job_id, skills, category, seniority, experience_years, employment_type,
+                responsibilities, requirements, summary, model, status,
+                enriched_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (job_id)
+            DO UPDATE SET
+                skills = EXCLUDED.skills,
+                category = EXCLUDED.category,
+                seniority = EXCLUDED.seniority,
+                experience_years = EXCLUDED.experience_years,
+                employment_type = EXCLUDED.employment_type,
+                responsibilities = EXCLUDED.responsibilities,
+                requirements = EXCLUDED.requirements,
+                summary = EXCLUDED.summary,
+                model = EXCLUDED.model,
+                status = EXCLUDED.status,
+                enriched_at = EXCLUDED.enriched_at,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                job_id,
+                Json(values["skills"]),
+                values["category"],
+                values["seniority"],
+                values["experience_years"],
+                values["employment_type"],
+                Json(values["responsibilities"]),
+                Json(values["requirements"]),
+                values["summary"],
+                model or config.AI_MODEL,
+                status,
+                enriched_at,
+            ),
+        )
+        conn.commit()
+    except psycopg2.Error:
+        if conn:
+            conn.rollback()
+        logger.exception("failed to save AI enrichment for job %s", job_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_job_ai_enrichment(job_id):
+    ensure_ai_schema()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT skills, category, seniority, experience_years, employment_type,
+                   responsibilities, requirements, summary, model, status,
+                   enriched_at, created_at, updated_at
+            FROM job_ai_enrichment
+            WHERE job_id = %s
+            """,
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": job_id,
+            "skills": row[0],
+            "category": row[1],
+            "seniority": row[2],
+            "experience_years": row[3],
+            "employment_type": row[4],
+            "responsibilities": row[5],
+            "requirements": row[6],
+            "summary": row[7],
+            "model": row[8],
+            "status": row[9],
+            "enriched_at": row[10],
+            "created_at": row[11],
+            "updated_at": row[12],
+        }
+    except psycopg2.Error:
+        logger.exception("failed to retrieve AI enrichment for job %s", job_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def save_job_embedding(job_id, embedding, embedding_model=None):
+    if not embedding:
+        raise ValueError("embedding must contain at least one value")
+    if not all(isinstance(value, (int, float)) for value in embedding):
+        raise TypeError("embedding must contain only numeric values")
+
+    ensure_ai_schema()
+    vector = "[" + ",".join(str(value) for value in embedding) + "]"
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO job_embeddings (
+                job_id, embedding, embedding_model, dimensions
+            )
+            VALUES (%s, %s::vector, %s, %s)
+            ON CONFLICT (job_id)
+            DO UPDATE SET
+                embedding = EXCLUDED.embedding,
+                embedding_model = EXCLUDED.embedding_model,
+                dimensions = EXCLUDED.dimensions,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                job_id,
+                vector,
+                embedding_model or config.AI_EMBEDDING_MODEL,
+                len(embedding),
+            ),
+        )
+        conn.commit()
+    except psycopg2.Error:
+        if conn:
+            conn.rollback()
+        logger.exception("failed to save embedding for job %s", job_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_job_embedding(job_id):
+    ensure_ai_schema()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT embedding, embedding_model, dimensions, created_at, updated_at
+            FROM job_embeddings
+            WHERE job_id = %s
+            """,
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        embedding = row[0]
+        if isinstance(embedding, str):
+            embedding = [float(value) for value in embedding.strip("[]").split(",")]
+        return {
+            "job_id": job_id,
+            "embedding": embedding,
+            "embedding_model": row[1],
+            "dimensions": row[2],
+            "created_at": row[3],
+            "updated_at": row[4],
+        }
+    except psycopg2.Error:
+        logger.exception("failed to retrieve embedding for job %s", job_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def search_jobs_by_embedding(embedding, top_k=10):
+    if not embedding:
+        raise ValueError("embedding must contain at least one value")
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
+        raise ValueError("top_k must be a positive integer")
+    if not all(isinstance(value, (int, float)) for value in embedding):
+        raise TypeError("embedding must contain only numeric values")
+
+    ensure_ai_schema()
+    vector = "[" + ",".join(str(value) for value in embedding) + "]"
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT {JOB_COLUMNS},
+                   job_embeddings.embedding <=> %s::vector AS distance
+            FROM jobs
+            JOIN job_embeddings ON job_embeddings.job_id = jobs.id
+            WHERE jobs.is_active = TRUE
+            ORDER BY distance ASC
+            LIMIT %s
+            """,
+            (vector, top_k),
+        )
+        results = []
+        for row in cursor.fetchall():
+            distance = float(row[-1])
+            results.append(
+                {
+                    "job": Job.from_row(row[:-1]),
+                    "distance": distance,
+                    "similarity": 1.0 - distance,
+                }
+            )
+        return results
+    except psycopg2.Error:
+        logger.exception("failed to search jobs by embedding")
         raise
     finally:
         if cursor:
