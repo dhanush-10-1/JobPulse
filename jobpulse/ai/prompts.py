@@ -18,3 +18,16 @@ role, technology, category, or job title. Category is the functional domain,
 such as Backend, Data Engineering, Data Science, Frontend, or DevOps.
 Do not infer facts that are not supported by the posting.
 """.strip()
+
+
+RESUME_EXTRACTION_SYSTEM_PROMPT = """
+Extract a structured profile from the resume text. Extract only information
+explicitly present in the resume. Do not invent skills, experience, education,
+projects, or technologies. Use empty lists when a section is absent. Use null
+or an empty string for missing scalar values, according to the response schema.
+Each experience item must contain company, role, duration, and description.
+Each education item must contain institution, degree, field, and year. Each
+project item must contain name, description, and a technologies list. Use empty
+strings or empty lists for missing values within these structures. Preserve the
+resume's factual meaning and return only the requested fields as JSON.
+""".strip()

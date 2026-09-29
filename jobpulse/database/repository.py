@@ -1,8 +1,18 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from .connections import connect_db, psycopg2
+import json
+from uuid import UUID, uuid4
+
 from psycopg2.extras import Json
 from jobpulse.utils.logger import logger
 from jobpulse.ingestion.models import Job
 import config
+
+if TYPE_CHECKING:
+    from jobpulse.ai.resume import ResumeProfile
 
 
 JOB_COLUMNS = """
@@ -46,6 +56,34 @@ def _create_ai_schema(cursor):
             dimensions INTEGER NOT NULL CHECK (dimensions > 0),
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resume_profiles (
+            id UUID PRIMARY KEY,
+            name TEXT,
+            summary TEXT,
+            skills JSONB NOT NULL,
+            technologies JSONB NOT NULL,
+            experience JSONB NOT NULL,
+            education JSONB NOT NULL,
+            projects JSONB NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resume_embeddings (
+            resume_id UUID PRIMARY KEY REFERENCES resume_profiles(id) ON DELETE CASCADE,
+            embedding vector NOT NULL,
+            embedding_model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
         """
     )
@@ -361,6 +399,268 @@ def get_job_ai_enrichment(job_id):
         }
     except psycopg2.Error:
         logger.exception("failed to retrieve AI enrichment for job %s", job_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def save_resume_profile(profile: ResumeProfile) -> UUID:
+    def serialize_items(items):
+        return [item.model_dump() if hasattr(item, "model_dump") else item for item in items]
+
+    resume_id = uuid4()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO resume_profiles (
+                id, name, summary, skills, technologies, experience,
+                education, projects
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(resume_id),
+                profile.name,
+                profile.summary,
+                Json(profile.skills),
+                Json(profile.technologies),
+                Json(serialize_items(profile.experience)),
+                Json(serialize_items(profile.education)),
+                Json(serialize_items(profile.projects)),
+            ),
+        )
+        conn.commit()
+        return resume_id
+    except psycopg2.Error:
+        if conn:
+            conn.rollback()
+        logger.exception("failed to save resume profile")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def _resume_jsonb_value(value):
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def get_resume_profile(resume_id: UUID) -> ResumeProfile | None:
+    from jobpulse.ai.resume import ResumeProfile
+
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT name, summary, skills, technologies, experience,
+                   education, projects
+            FROM resume_profiles
+            WHERE id = %s
+            """,
+            (str(resume_id),),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return ResumeProfile(
+            name=row[0],
+            summary=row[1],
+            skills=_resume_jsonb_value(row[2]),
+            technologies=_resume_jsonb_value(row[3]),
+            experience=_resume_jsonb_value(row[4]),
+            education=_resume_jsonb_value(row[5]),
+            projects=_resume_jsonb_value(row[6]),
+        )
+    except psycopg2.Error:
+        logger.exception("failed to retrieve resume profile %s", resume_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def save_resume_embedding(resume_id: UUID, embedding, embedding_model=None):
+    if not embedding:
+        raise ValueError("embedding must contain at least one value")
+    if not all(isinstance(value, (int, float)) for value in embedding):
+        raise TypeError("embedding must contain only numeric values")
+
+    ensure_ai_schema()
+    vector = "[" + ",".join(str(value) for value in embedding) + "]"
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO resume_embeddings (
+                resume_id, embedding, embedding_model, dimensions
+            )
+            VALUES (%s, %s::vector, %s, %s)
+            ON CONFLICT (resume_id)
+            DO UPDATE SET
+                embedding = EXCLUDED.embedding,
+                embedding_model = EXCLUDED.embedding_model,
+                dimensions = EXCLUDED.dimensions,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                str(resume_id),
+                vector,
+                embedding_model or config.AI_EMBEDDING_MODEL,
+                len(embedding),
+            ),
+        )
+        conn.commit()
+    except psycopg2.Error:
+        if conn:
+            conn.rollback()
+        logger.exception("failed to save resume embedding for %s", resume_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_resume_embedding(resume_id: UUID):
+    ensure_ai_schema()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT embedding, embedding_model, dimensions, created_at, updated_at
+            FROM resume_embeddings
+            WHERE resume_id = %s
+            """,
+            (str(resume_id),),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        embedding = row[0]
+        if isinstance(embedding, str):
+            embedding = [
+                float(value) for value in embedding.strip("[]").split(",")
+            ]
+        return {
+            "resume_id": resume_id,
+            "embedding": embedding,
+            "embedding_model": row[1],
+            "dimensions": row[2],
+            "created_at": row[3],
+            "updated_at": row[4],
+        }
+    except psycopg2.Error:
+        logger.exception("failed to retrieve resume embedding for %s", resume_id)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_jobs_for_enrichment_batch(limit, model=None):
+    """Return active jobs with descriptions not completed by the given model."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+
+    configured_model = model or config.AI_MODEL
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+                        SELECT j.id, j.title, j.company, j.location, j.posted_date, j.url,
+                                     j.source, j.first_seen_at, j.last_seen_at, j.is_active,
+                                     j.source_job_id, j.description, j.employment_type, j.salary,
+                                     ai.status, ai.model
+                        FROM jobs j
+                        LEFT JOIN job_ai_enrichment ai ON ai.job_id = j.id
+                        WHERE j.is_active = TRUE
+                            AND j.description IS NOT NULL
+                            AND BTRIM(j.description) <> ''
+              AND NOT (
+                  ai.status = 'completed'
+                  AND ai.model = %s
+              )
+                        ORDER BY j.id
+            LIMIT %s
+            """,
+            (configured_model, limit),
+        )
+        records = []
+        for row in cursor.fetchall():
+            job = Job.from_row(row[1:14])
+            job.id = row[0]
+            records.append({"job": job, "status": row[14], "model": row[15]})
+        return records
+    except psycopg2.Error:
+        logger.exception("failed to select jobs for AI enrichment")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_jobs_for_embedding_batch(limit):
+    """Return active jobs with non-empty descriptions and embedding state."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT j.id, j.title, j.company, j.location, j.posted_date, j.url,
+                   j.source, j.first_seen_at, j.last_seen_at, j.is_active,
+                   j.source_job_id, j.description, j.employment_type, j.salary,
+                   e.job_id
+            FROM jobs j
+            LEFT JOIN job_embeddings e ON e.job_id = j.id
+            WHERE j.is_active = TRUE
+              AND j.description IS NOT NULL
+              AND BTRIM(j.description) <> ''
+            ORDER BY j.id
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        records = []
+        for row in cursor.fetchall():
+            job = Job.from_row(row[1:14])
+            job.id = row[0]
+            records.append({"job": job, "has_embedding": row[14] is not None})
+        return records
+    except psycopg2.Error:
+        logger.exception("failed to select jobs for embedding")
         raise
     finally:
         if cursor:

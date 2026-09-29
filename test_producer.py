@@ -12,4 +12,5 @@ job = Job(
     "https://jobpulse.test/jobs/999"
 )
 
-send_job(job)
+if __name__ == "__main__":
+    send_job(job)

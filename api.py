@@ -1,4 +1,7 @@
+from uuid import UUID
+
 from fastapi import FastAPI,HTTPException,status
+from jobpulse.ai.matching import MatchError, MatchResult, match_resume_to_job
 from jobpulse.ai.search import semantic_search
 from jobpulse.database.repository import ensure_job_freshness_schema,get_job_by_id,get_jobs_by_filter
 from jobpulse.utils.logger import logger
@@ -60,6 +63,23 @@ def search_jobs(q: str, top_k: int = 10):
             for result in matches
         ],
     }
+
+
+@app.get("/resumes/{resume_id}/match/{job_id}", response_model=MatchResult)
+def match_resume(resume_id: UUID, job_id: int):
+    try:
+        return match_resume_to_job(resume_id, job_id)
+    except MatchError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume, job, or matching data not found",
+        ) from error
+    except Exception as error:
+        logger.exception("resume-to-job matching failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Resume-to-job matching is temporarily unavailable",
+        ) from error
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id:int):
