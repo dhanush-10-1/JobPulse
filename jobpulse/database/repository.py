@@ -493,6 +493,36 @@ def get_resume_profile(resume_id: UUID) -> ResumeProfile | None:
             conn.close()
 
 
+def get_active_enriched_job_ids():
+    """Return active jobs with completed enrichment and stored embeddings."""
+    ensure_ai_schema()
+    conn = None
+    cursor = None
+    try:
+        conn = connect_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT j.id
+            FROM jobs j
+            JOIN job_ai_enrichment ai ON ai.job_id = j.id
+            JOIN job_embeddings e ON e.job_id = j.id
+            WHERE j.is_active = TRUE
+              AND ai.status = 'completed'
+            ORDER BY j.id
+            """
+        )
+        return [row[0] for row in cursor.fetchall()]
+    except psycopg2.Error:
+        logger.exception("failed to select eligible recommendation jobs")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 def save_resume_embedding(resume_id: UUID, embedding, embedding_model=None):
     if not embedding:
         raise ValueError("embedding must contain at least one value")
